@@ -1,49 +1,32 @@
 import re
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
-import streamlit as st
 import plotly.express as px
-from textblob import TextBlob
+import streamlit as st
 from sklearn.preprocessing import MinMaxScaler
+from textblob import TextBlob
 
 
-st.set_page_config(
-    page_title="Hidden Gems Stay Recommender",
-    page_icon="🏨",
-    layout="wide"
-)
-
+st.set_page_config(page_title="Hidden Gems Stay Recommender", page_icon="🏨", layout="wide")
 st.title("🏨 Hidden Gems Stay Recommender")
-st.caption(
-    "Find overlooked, high-quality stays within major European cities using "
-    "aspect-based sentiment, crowd signals, and location preferences."
-)
+st.caption("Find overlooked, high-quality stays within major European cities.")
 
-DATA_PATH = "../data/Hotel_Reviews.csv"
+APP_DIR = Path(__file__).resolve().parent
+ROOT_DIR = APP_DIR.parent
+DATA_PATH = ROOT_DIR / "data" / "Hotel_Reviews.csv"
 
+ASPECTS = {
+    "noise": ["quiet", "noisy", "noise", "loud", "soundproof", "peaceful", "calm", "sleep", "street noise"],
+    "location": ["location", "central", "center", "walk", "metro", "station", "transport", "far", "near", "distance"],
+    "cleanliness": ["clean", "dirty", "spotless", "hygiene", "bathroom", "room clean", "dust", "smell", "stain"],
+    "staff": ["staff", "service", "friendly", "helpful", "rude", "reception", "manager", "check in", "check-in"],
+    "value": ["value", "price", "expensive", "cheap", "worth", "money", "overpriced", "cost"],
+}
 
-#def extract_city(address):
-#    if pd.isna(address):
-#        return None
-#
-#    parts = [p.strip() for p in str(address).split(",") if p.strip()]
-#
-#    if len(parts) >= 3:
-#        city_part = parts[-2]
-#    elif len(parts) == 2:
-#        city_part = parts[0]
-#    else:
-#        city_part = parts[0] if parts else None
-#
-#    if city_part is None:
-#        return None
-#
-#    city_part = re.sub(r"^\d+[A-Za-z\-\s]*\s+", "", city_part).strip()
-#    city_part = re.sub(r"\b\d{4,}\b", "", city_part).strip()
-#    city_part = re.sub(r"[^A-Za-zÀ-ÿ'\-\s]", " ", city_part)
-#    city_part = re.sub(r"\s+", " ", city_part).strip()
-#
-#    return city_part if city_part else None
+QUIET_KEYWORDS = ["quiet", "peaceful", "calm", "serene", "relaxing", "tranquil", "secluded", "sleep well", "good sleep", "not busy"]
+CROWDED_KEYWORDS = ["crowded", "busy", "packed", "touristy", "overcrowded", "noisy", "loud", "queue", "long lines", "too many people"]
 
 
 def split_sentences(text):
@@ -54,15 +37,12 @@ def split_sentences(text):
 def aspect_sentiment(text, keywords):
     sentences = split_sentences(text)
     scores = []
-
     for sentence in sentences:
         sentence_lower = sentence.lower()
         if any(keyword in sentence_lower for keyword in keywords):
             scores.append(TextBlob(sentence).sentiment.polarity)
-
     if len(scores) == 0:
         return 0.0
-
     return np.mean(scores)
 
 
@@ -73,83 +53,41 @@ def contains_any(text, keywords):
 
 def haversine_km(lat1, lon1, lat2, lon2):
     r = 6371.0
-
     lat1 = np.radians(lat1)
     lon1 = np.radians(lon1)
     lat2 = np.radians(lat2)
     lon2 = np.radians(lon2)
-
     dlat = lat2 - lat1
     dlon = lon2 - lon1
-
-    a = (
-        np.sin(dlat / 2.0) ** 2
-        + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2.0) ** 2
-    )
+    a = (np.sin(dlat / 2.0) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2.0) ** 2)
     c = 2 * np.arcsin(np.sqrt(a))
-
     return r * c
 
 
-ASPECTS = {
-    "noise": [
-        "quiet", "noisy", "noise", "loud", "soundproof",
-        "peaceful", "calm", "sleep", "street noise"
-    ],
-    "location": [
-        "location", "central", "center", "walk", "metro",
-        "station", "transport", "far", "near", "distance"
-    ],
-    "cleanliness": [
-        "clean", "dirty", "spotless", "hygiene", "bathroom",
-        "room clean", "dust", "smell", "stain"
-    ],
-    "staff": [
-        "staff", "service", "friendly", "helpful",
-        "rude", "reception", "manager", "check in", "check-in"
-    ],
-    "value": [
-        "value", "price", "expensive", "cheap",
-        "worth", "money", "overpriced", "cost"
-    ],
-}
-
-QUIET_KEYWORDS = [
-    "quiet", "peaceful", "calm", "serene", "relaxing",
-    "tranquil", "secluded", "sleep well", "good sleep", "not busy"
-]
-
-CROWDED_KEYWORDS = [
-    "crowded", "busy", "packed", "touristy", "overcrowded",
-    "noisy", "loud", "queue", "long lines", "too many people"
-]
+def compute_weighted_score(df, weights, score_col="hidden_score_base"):
+    out = df.copy()
+    score = 0
+    for feature, weight in weights.items():
+        score += weight * out[feature]
+    out[score_col] = score
+    return out
 
 
 def recommend(
     df,
     city=None,
     prefer_quiet=True,
-    quiet_weight=0.10,
+    quiet_weight=0.15,
     avoid_crowds=True,
     crowd_weight=0.10,
-    prefer_cleanliness=True,
-    cleanliness_weight=0.05,
-    prefer_staff=True,
-    staff_weight=0.05,
-    prefer_location_reviews=True,
-    location_review_weight=0.05,
-    prefer_value=True,
-    value_weight=0.05,
     distance_mode="balanced",
-    distance_weight=0.05,
-    top_k=10
+    distance_weight=0.10,
+    top_k=10,
 ):
     out = df.copy()
 
     if city is not None:
-        out = out[
-            out["city"].astype(str).str.strip().str.lower() == city.strip().lower()
-        ].copy()
+        out = out[out["city"].astype(str).str.strip().str.lower() == city.strip().lower()].copy()
 
     if out.empty:
         return out
@@ -157,31 +95,37 @@ def recommend(
     score = out["hidden_score_base"].copy()
 
     if prefer_quiet:
-        score += quiet_weight * out["noise_sentiment"]
+        quiet_match_score = out["quiet_net"]
+    else:
+        quiet_match_score = 1 - out["quiet_net"]
+
+    calm_quality_score = 0.50 * quiet_match_score + 0.50 * out["noise_sentiment"]
+    score += quiet_weight * calm_quality_score
 
     if avoid_crowds:
-        score -= crowd_weight * out["crowded_negative_rate"]
+        crowd_match_score = 1 - out["crowded_negative_rate"]
+    else:
+        crowd_match_score = out["crowded_negative_rate"]
 
-    if prefer_cleanliness:
-        score += cleanliness_weight * out["cleanliness_sentiment"]
-
-    if prefer_staff:
-        score += staff_weight * out["staff_sentiment"]
-
-    if prefer_location_reviews:
-        score += location_review_weight * out["location_sentiment"]
-
-    if prefer_value:
-        score += value_weight * out["value_sentiment"]
+    score += crowd_weight * crowd_match_score
 
     if distance_mode == "central":
-        score += distance_weight * out["centrality_score"]
+        distance_match_score = out["centrality_score"]
     elif distance_mode == "balanced":
-        score += distance_weight * out["distance_sweet_spot"]
+        distance_match_score = out["distance_sweet_spot"]
     elif distance_mode == "outer":
-        score += distance_weight * out["distance_percentile_within_city"]
+        distance_match_score = out["distance_percentile_within_city"]
+    else:
+        distance_match_score = out["distance_sweet_spot"]
 
+    score += distance_weight * distance_match_score
+
+    out["quiet_match_score"] = quiet_match_score
+    out["calm_quality_score"] = calm_quality_score
+    out["crowd_match_score"] = crowd_match_score
+    out["distance_match_score"] = distance_match_score
     out["final_score"] = score
+    out["city_final_percentile"] = out.groupby("city")["final_score"].rank(method="average", pct=True)
 
     return out.sort_values("final_score", ascending=False).head(top_k)
 
@@ -189,35 +133,30 @@ def recommend(
 def explain(row, distance_mode="balanced"):
     reasons = []
 
+    if row["calm_quality_score"] > 0.70:
+        reasons.append("strong quiet/calm match")
     if row["noise_sentiment"] > 0.70:
-        reasons.append("reviews are positive about quietness and noise levels")
-
+        reasons.append("positive noise/quiet sentiment")
     if row["cleanliness_sentiment"] > 0.70:
-        reasons.append("guests speak positively about cleanliness")
-
+        reasons.append("cleanliness is praised")
     if row["staff_sentiment"] > 0.70:
-        reasons.append("staff and service are frequently praised")
-
+        reasons.append("staff/service is praised")
     if row["location_sentiment"] > 0.70:
         reasons.append("location is reviewed positively")
-
     if row["value_sentiment"] > 0.70:
         reasons.append("guests mention good value")
-
-    if row["crowded_negative_rate"] < 0.25:
-        reasons.append("fewer complaints about crowds or noise")
+    if row["crowd_match_score"] > 0.75:
+        reasons.append("matches your crowd preference")
 
     if distance_mode == "central" and row["centrality_score"] > 0.75:
         reasons.append("close to the city center")
-
     elif distance_mode == "balanced" and row["distance_sweet_spot"] > 0.80:
-        reasons.append("well positioned away from the busiest core without being too far out")
-
+        reasons.append("away from the busiest core without being too far out")
     elif distance_mode == "outer" and row["distance_percentile_within_city"] > 0.75:
         reasons.append("farther from the busiest center areas")
 
-    if row["city_hidden_percentile"] > 0.85:
-        reasons.append("stands out as an overlooked option within its city")
+    if row["city_final_percentile"] > 0.85:
+        reasons.append("high hidden-gem match within this city")
 
     if not reasons:
         reasons.append("balanced overall profile")
@@ -226,7 +165,7 @@ def explain(row, distance_mode="balanced"):
 
 
 @st.cache_data(show_spinner=True)
-def load_and_prepare_data(path, sample_size=None):
+def load_and_prepare_data(path, sample_size=100_000):
     df = pd.read_csv(path)
 
     if sample_size is not None and len(df) > sample_size:
@@ -242,61 +181,39 @@ def load_and_prepare_data(path, sample_size=None):
             "Negative_Review",
             "lat",
             "lng",
-            "Province_Name"
+            "Province_Name",
         ]
     ].copy()
 
     df["Positive_Review"] = df["Positive_Review"].fillna("").astype(str).str.strip()
     df["Negative_Review"] = df["Negative_Review"].fillna("").astype(str).str.strip()
-
     df.dropna(subset=["lat", "lng"], inplace=True)
 
-    #df["city"] = df["Hotel_Address"].apply(extract_city).astype("string").str.strip()
-    df["city"] = df["Province_Name"].astype("string").str.strip()
+    df = df.rename(columns={"Province_Name": "Metro_Area"})
+    df["city"] = df["Metro_Area"].astype(str).str.strip()
 
     for aspect, keywords in ASPECTS.items():
-        df[f"{aspect}_pos_sentiment"] = df["Positive_Review"].apply(
-            lambda x, kw=keywords: aspect_sentiment(x, kw)
-        )
+        df[f"{aspect}_pos_sentiment"] = df["Positive_Review"].apply(lambda x, kw=keywords: aspect_sentiment(x, kw))
+        df[f"{aspect}_neg_sentiment"] = df["Negative_Review"].apply(lambda x, kw=keywords: aspect_sentiment(x, kw))
+        df[f"{aspect}_net_sentiment"] = df[f"{aspect}_pos_sentiment"] - df[f"{aspect}_neg_sentiment"]
 
-        df[f"{aspect}_neg_sentiment"] = df["Negative_Review"].apply(
-            lambda x, kw=keywords: aspect_sentiment(x, kw)
-        )
-
-        df[f"{aspect}_net_sentiment"] = (
-            df[f"{aspect}_pos_sentiment"] - df[f"{aspect}_neg_sentiment"]
-        )
-
-    df["quiet_in_positive"] = df["Positive_Review"].apply(
-        lambda x: contains_any(x, QUIET_KEYWORDS)
-    )
-    df["quiet_in_negative"] = df["Negative_Review"].apply(
-        lambda x: contains_any(x, QUIET_KEYWORDS)
-    )
-    df["crowded_in_positive"] = df["Positive_Review"].apply(
-        lambda x: contains_any(x, CROWDED_KEYWORDS)
-    )
-    df["crowded_in_negative"] = df["Negative_Review"].apply(
-        lambda x: contains_any(x, CROWDED_KEYWORDS)
-    )
+    df["quiet_in_positive"] = df["Positive_Review"].apply(lambda x: contains_any(x, QUIET_KEYWORDS))
+    df["quiet_in_negative"] = df["Negative_Review"].apply(lambda x: contains_any(x, QUIET_KEYWORDS))
+    df["crowded_in_positive"] = df["Positive_Review"].apply(lambda x: contains_any(x, CROWDED_KEYWORDS))
+    df["crowded_in_negative"] = df["Negative_Review"].apply(lambda x: contains_any(x, CROWDED_KEYWORDS))
 
     df["quiet_net"] = df["quiet_in_positive"] - df["quiet_in_negative"]
     df["crowded_net"] = df["crowded_in_positive"] - df["crowded_in_negative"]
 
-    hotel_stats = df.groupby(
-        ["Hotel_Name", "city", "lat", "lng"],
-        as_index=False
-    ).agg(
+    hotel_stats = df.groupby(["Hotel_Name", "city", "lat", "lng"], as_index=False).agg(
         avg_rating=("Reviewer_Score", "mean"),
         review_count=("Reviewer_Score", "count"),
         dataset_total_reviews=("Total_Number_of_Reviews", "max"),
-
         noise_sentiment=("noise_net_sentiment", "mean"),
         location_sentiment=("location_net_sentiment", "mean"),
         cleanliness_sentiment=("cleanliness_net_sentiment", "mean"),
         staff_sentiment=("staff_net_sentiment", "mean"),
         value_sentiment=("value_net_sentiment", "mean"),
-
         quiet_positive_rate=("quiet_in_positive", "mean"),
         quiet_negative_rate=("quiet_in_negative", "mean"),
         crowded_positive_rate=("crowded_in_positive", "mean"),
@@ -325,11 +242,13 @@ def load_and_prepare_data(path, sample_size=None):
     scaler = MinMaxScaler()
     hotel_stats[scale_cols] = scaler.fit_transform(hotel_stats[scale_cols])
 
-    city_centers = pd.DataFrame({
-        "city": ["Milan", "Amsterdam", "Barcelona", "London", "Paris", "Vienna"],
-        "city_center_lat": [45.4668, 52.3728, 41.3825, 51.5073, 48.8535, 48.2084],
-        "city_center_lng": [9.1905, 4.8936, 2.1769, -0.1277, 2.3484, 16.3725],
-    })
+    city_centers = pd.DataFrame(
+        {
+            "city": ["Milan", "Amsterdam", "Barcelona", "London", "Paris", "Vienna"],
+            "city_center_lat": [45.4668, 52.3728, 41.3825, 51.5073, 48.8535, 48.2084],
+            "city_center_lng": [9.1905, 4.8936, 2.1769, -0.1277, 2.3484, 16.3725],
+        }
+    )
 
     hotel_stats["city"] = hotel_stats["city"].astype(str).str.strip()
     city_centers["city"] = city_centers["city"].astype(str).str.strip()
@@ -342,37 +261,27 @@ def load_and_prepare_data(path, sample_size=None):
         hotel_stats["city_center_lng"],
     )
 
-    hotel_stats["distance_percentile_within_city"] = (
-        hotel_stats.groupby("city")["distance_from_center_km"]
-        .rank(method="average", pct=True)
-    )
-
-    hotel_stats["distance_from_center_pct"] = (
-        100 * hotel_stats["distance_percentile_within_city"]
-    ).round(1)
-
-    hotel_stats["distance_sweet_spot"] = (
-        1 - (2 * np.abs(hotel_stats["distance_percentile_within_city"] - 0.5))
-    )
-
+    hotel_stats["distance_percentile_within_city"] = hotel_stats.groupby("city")["distance_from_center_km"].rank(method="average", pct=True)
+    hotel_stats["distance_from_center_pct"] = (100 * hotel_stats["distance_percentile_within_city"]).round(1)
+    hotel_stats["distance_sweet_spot"] = 1 - (2 * np.abs(hotel_stats["distance_percentile_within_city"] - 0.5))
     hotel_stats["centrality_score"] = 1 - hotel_stats["distance_percentile_within_city"]
 
-    hotel_stats["hidden_score_base"] = (
-        0.25 * hotel_stats["avg_rating"]
-        + 0.20 * hotel_stats["noise_sentiment"]
-        + 0.15 * hotel_stats["cleanliness_sentiment"]
-        + 0.10 * hotel_stats["staff_sentiment"]
-        + 0.10 * hotel_stats["location_sentiment"]
-        + 0.05 * hotel_stats["value_sentiment"]
-        + 0.10 * hotel_stats["quiet_net"]
-        - 0.10 * hotel_stats["crowded_negative_rate"]
-        - 0.05 * hotel_stats["dataset_total_reviews"]
-    )
+    hotel_stats["log_review_count"] = np.log1p(hotel_stats["dataset_total_reviews"])
 
-    hotel_stats["city_hidden_percentile"] = (
-        hotel_stats.groupby("city")["hidden_score_base"]
-        .rank(method="average", pct=True)
-    )
+    BASE_WEIGHTS = {
+        "avg_rating": 0.30,
+        "cleanliness_sentiment": 0.15,
+        "staff_sentiment": 0.15,
+        "location_sentiment": 0.10,
+        "value_sentiment": 0.10,
+        "noise_sentiment": 0.10,
+        "crowded_negative_rate": -0.05,
+        "log_review_count": -0.05,
+    }
+
+    hotel_stats = compute_weighted_score(hotel_stats, BASE_WEIGHTS, score_col="hidden_score_base")
+
+    hotel_stats["city_hidden_percentile"] = hotel_stats.groupby("city")["hidden_score_base"].rank(method="average", pct=True)
 
     return hotel_stats
 
@@ -383,7 +292,7 @@ sample_choice = st.sidebar.selectbox(
     "Rows to process",
     options=["100,000 rows", "200,000 rows", "Full dataset"],
     index=0,
-    help="Use a sample while developing. The full dataset may take longer."
+    help="Use a sample while developing. Full dataset may take longer.",
 )
 
 if sample_choice == "100,000 rows":
@@ -397,10 +306,7 @@ with st.spinner("Loading data and building recommendation features..."):
     try:
         hotel_stats = load_and_prepare_data(DATA_PATH, sample_size=sample_size)
     except FileNotFoundError:
-        st.error(
-            f"Could not find the dataset at `{DATA_PATH}`. "
-            "Make sure `Hotel_Reviews.csv` is inside your `data/` folder."
-        )
+        st.error(f"Could not find the dataset at `{DATA_PATH}`.")
         st.stop()
     except Exception as e:
         st.error(f"Could not load data: {e}")
@@ -409,93 +315,25 @@ with st.spinner("Loading data and building recommendation features..."):
 city_options = sorted(hotel_stats["city"].dropna().astype(str).unique().tolist())
 
 if len(city_options) == 0:
-    st.error("No cities were found after parsing hotel addresses.")
+    st.error("No cities were found.")
     st.stop()
 
 default_city = "Paris" if "Paris" in city_options else city_options[0]
-
-selected_city = st.sidebar.selectbox(
-    "City",
-    options=city_options,
-    index=city_options.index(default_city)
-)
+selected_city = st.sidebar.selectbox("City", options=city_options, index=city_options.index(default_city))
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("Experience preferences")
+st.sidebar.subheader("Preference matching")
 
-prefer_quiet = st.sidebar.checkbox("Prefer quiet stays", value=True)
-quiet_weight = st.sidebar.slider(
-    "Quiet preference strength",
-    min_value=0.00,
-    max_value=0.30,
-    value=0.10,
-    step=0.01,
-    disabled=not prefer_quiet
-)
+prefer_quiet = st.sidebar.checkbox("Prefer quiet/calm stays", value=True)
+quiet_weight = st.sidebar.slider("Quiet preference strength", 0.00, 0.30, 0.15, 0.01, disabled=not prefer_quiet)
 
-avoid_crowds = st.sidebar.checkbox("Avoid crowd/noise complaints", value=True)
-crowd_weight = st.sidebar.slider(
-    "Crowd penalty strength",
-    min_value=0.00,
-    max_value=0.30,
-    value=0.10,
-    step=0.01,
-    disabled=not avoid_crowds
-)
-
-prefer_cleanliness = st.sidebar.checkbox("Prioritize cleanliness", value=True)
-cleanliness_weight = st.sidebar.slider(
-    "Cleanliness strength",
-    min_value=0.00,
-    max_value=0.20,
-    value=0.05,
-    step=0.01,
-    disabled=not prefer_cleanliness
-)
-
-prefer_staff = st.sidebar.checkbox("Prioritize staff/service", value=True)
-staff_weight = st.sidebar.slider(
-    "Staff/service strength",
-    min_value=0.00,
-    max_value=0.20,
-    value=0.05,
-    step=0.01,
-    disabled=not prefer_staff
-)
-
-prefer_location_reviews = st.sidebar.checkbox("Prioritize positive location reviews", value=True)
-location_review_weight = st.sidebar.slider(
-    "Location review strength",
-    min_value=0.00,
-    max_value=0.20,
-    value=0.05,
-    step=0.01,
-    disabled=not prefer_location_reviews
-)
-
-prefer_value = st.sidebar.checkbox("Prioritize value mentions", value=True)
-value_weight = st.sidebar.slider(
-    "Value strength",
-    min_value=0.00,
-    max_value=0.20,
-    value=0.05,
-    step=0.01,
-    disabled=not prefer_value
-)
+avoid_crowds = st.sidebar.checkbox("Avoid crowded/noisy stays", value=True)
+crowd_weight = st.sidebar.slider("Crowd preference strength", 0.00, 0.30, 0.10, 0.01)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("Location preference")
 
-distance_mode_label = st.sidebar.radio(
-    "Where do you want to stay?",
-    options=["Central", "Balanced", "Farther from center"],
-    index=1,
-    help=(
-        "Central favors hotels closer to the city center. "
-        "Balanced favors hotels away from the busiest core without being too far. "
-        "Farther from center favors hotels farther out relative to other hotels in the same city."
-    )
-)
+distance_mode_label = st.sidebar.radio("Where do you want to stay?", ["Central", "Balanced", "Farther from center"], index=1)
 
 distance_mode_map = {
     "Central": "central",
@@ -504,21 +342,9 @@ distance_mode_map = {
 }
 distance_mode = distance_mode_map[distance_mode_label]
 
-distance_weight = st.sidebar.slider(
-    "Location preference strength",
-    min_value=0.00,
-    max_value=0.20,
-    value=0.05,
-    step=0.01
-)
+distance_weight = st.sidebar.slider("Location preference strength", 0.00, 0.30, 0.10, 0.01)
 
-top_k = st.sidebar.slider(
-    "Number of recommendations",
-    min_value=5,
-    max_value=30,
-    value=10,
-    step=1
-)
+top_k = st.sidebar.slider("Number of recommendations", 5, 30, 10, 1)
 
 results = recommend(
     hotel_stats,
@@ -527,14 +353,6 @@ results = recommend(
     quiet_weight=quiet_weight,
     avoid_crowds=avoid_crowds,
     crowd_weight=crowd_weight,
-    prefer_cleanliness=prefer_cleanliness,
-    cleanliness_weight=cleanliness_weight,
-    prefer_staff=prefer_staff,
-    staff_weight=staff_weight,
-    prefer_location_reviews=prefer_location_reviews,
-    location_review_weight=location_review_weight,
-    prefer_value=prefer_value,
-    value_weight=value_weight,
     distance_mode=distance_mode,
     distance_weight=distance_weight,
     top_k=top_k,
@@ -545,10 +363,7 @@ if results.empty:
     st.stop()
 
 results = results.copy()
-results["explanation"] = results.apply(
-    lambda row: explain(row, distance_mode=distance_mode),
-    axis=1
-)
+results["explanation"] = results.apply(lambda row: explain(row, distance_mode=distance_mode), axis=1)
 
 st.subheader(f"Top hidden stays in {selected_city}")
 
@@ -556,22 +371,25 @@ c1, c2, c3, c4 = st.columns(4)
 c1.metric("Hotels shown", len(results))
 c2.metric("Avg final score", f"{results['final_score'].mean():.3f}")
 c3.metric("Avg distance", f"{results['distance_from_center_km'].mean():.2f} km")
-c4.metric("Avg crowd complaints", f"{results['crowded_negative_rate'].mean():.3f}")
+c4.metric("Avg calm match", f"{results['calm_quality_score'].mean():.3f}")
 
 display_df = results[
     [
         "Hotel_Name",
         "final_score",
+        "hidden_score_base",
+        "city_final_percentile",
         "avg_rating",
+        "calm_quality_score",
+        "crowd_match_score",
+        "distance_match_score",
         "noise_sentiment",
         "cleanliness_sentiment",
         "staff_sentiment",
         "location_sentiment",
         "value_sentiment",
-        "crowded_negative_rate",
         "distance_from_center_km",
         "distance_from_center_pct",
-        "city_hidden_percentile",
         "explanation",
     ]
 ].copy()
@@ -580,16 +398,19 @@ display_df = display_df.rename(
     columns={
         "Hotel_Name": "Hotel",
         "final_score": "Final score",
+        "hidden_score_base": "Base hidden score",
+        "city_final_percentile": "Final percentile in city",
         "avg_rating": "Rating",
-        "noise_sentiment": "Noise/quiet sentiment",
+        "calm_quality_score": "Calm match",
+        "crowd_match_score": "Crowd match",
+        "distance_match_score": "Distance match",
+        "noise_sentiment": "Noise sentiment",
         "cleanliness_sentiment": "Cleanliness sentiment",
         "staff_sentiment": "Staff sentiment",
         "location_sentiment": "Location sentiment",
         "value_sentiment": "Value sentiment",
-        "crowded_negative_rate": "Crowd complaint rate",
         "distance_from_center_km": "Distance from center (km)",
         "distance_from_center_pct": "Distance percentile in city",
-        "city_hidden_percentile": "Hidden-gem percentile",
         "explanation": "Why recommended",
     }
 )
@@ -606,74 +427,25 @@ fig = px.scatter_mapbox(
     hover_data={
         "city": True,
         "final_score": ":.3f",
-        "avg_rating": ":.3f",
-        "noise_sentiment": ":.3f",
-        "crowded_negative_rate": ":.3f",
+        "hidden_score_base": ":.3f",
+        "calm_quality_score": ":.3f",
+        "crowd_match_score": ":.3f",
+        "distance_match_score": ":.3f",
         "distance_from_center_km": ":.2f",
-        "distance_from_center_pct": ":.1f",
-        "city_hidden_percentile": ":.3f",
+        "city_final_percentile": ":.3f",
         "lat": False,
         "lng": False,
     },
     color="final_score",
-    size="city_hidden_percentile",
+    size="city_final_percentile",
     color_continuous_scale="Viridis",
     zoom=10,
     height=650,
-    title=f"Hidden stays in {selected_city}"
+    title=f"Hidden stays in {selected_city}",
 )
 
-fig.update_layout(
-    mapbox_style="open-street-map",
-    margin=dict(l=0, r=0, t=50, b=0)
-)
-
+fig.update_layout(mapbox_style="open-street-map", margin=dict(l=0, r=0, t=50, b=0))
 st.plotly_chart(fig, use_container_width=True)
-
-with st.expander("Show top 5 base hidden gems from each covered city"):
-    top_per_city = (
-        hotel_stats.sort_values("hidden_score_base", ascending=False)
-        .groupby("city", as_index=False)
-        .head(5)
-        .copy()
-    )
-
-    top_per_city["explanation"] = top_per_city.apply(
-        lambda row: explain(row, distance_mode="balanced"),
-        axis=1
-    )
-
-    st.dataframe(
-        top_per_city[
-            [
-                "Hotel_Name",
-                "city",
-                "hidden_score_base",
-                "city_hidden_percentile",
-                "noise_sentiment",
-                "cleanliness_sentiment",
-                "staff_sentiment",
-                "location_sentiment",
-                "value_sentiment",
-                "explanation",
-            ]
-        ].rename(
-            columns={
-                "Hotel_Name": "Hotel",
-                "city": "City",
-                "hidden_score_base": "Base hidden score",
-                "city_hidden_percentile": "Hidden-gem percentile",
-                "noise_sentiment": "Noise/quiet sentiment",
-                "cleanliness_sentiment": "Cleanliness sentiment",
-                "staff_sentiment": "Staff sentiment",
-                "location_sentiment": "Location sentiment",
-                "value_sentiment": "Value sentiment",
-                "explanation": "Why it stands out",
-            }
-        ),
-        use_container_width=True,
-        hide_index=True
-    )
 
 with st.expander("Methodology"):
     st.markdown(
@@ -681,12 +453,12 @@ with st.expander("Methodology"):
         **Business logic summary**
 
         - The app identifies hidden stays within major European cities, not hidden cities.
-        - Aspect-based sentiment extracts guest sentiment around noise, location, cleanliness, staff, and value.
+        - The base hidden-gem score uses expert-defined weights over rating, aspect-based sentiment, and popularity.
+        - Aspect-based sentiment extracts guest sentiment around noise, cleanliness, staff, location, and value.
         - Positive and negative review fields are analyzed separately.
         - Haversine distance estimates how far each hotel is from the city center.
-        - Distance is converted into a within-city percentile so it is comparable within each city.
-        - User controls use a checkbox + slider pattern:
-            - checkbox = whether the factor matters
-            - slider = how strongly that factor matters
+        - Distance is converted into within-city percentile features.
+        - User preferences are applied at recommendation time, not baked into the base score.
+        - The checkbox + slider pattern means checkbox = whether the preference direction matters, and slider = how strongly it affects ranking.
         """
     )
