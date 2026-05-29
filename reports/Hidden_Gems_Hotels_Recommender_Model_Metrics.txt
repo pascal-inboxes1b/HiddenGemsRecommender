@@ -1,0 +1,42 @@
+Hidden Gems Hotels Recommender - Model Metrics File
+
+Model type: Content-based recommendation engine / scoring system.
+Not a supervised predictive model; no target variable, train/test accuracy, or RMSE.
+
+Reporting data:
+- Notebook/reporting sample: 100,000 reviews
+- Hotel-level rows in exported feature table: 1,476
+- Cities: Amsterdam, Barcelona, London, Milan, Paris, Vienna
+- hidden_score_base range: 0.119 to 0.648
+- Median hidden_score_base: 0.374
+
+Base score weights:
+- avg_rating: 0.30
+- cleanliness_sentiment: 0.15
+- staff_sentiment: 0.15
+- location_sentiment: 0.10
+- value_sentiment: 0.10
+- noise_sentiment: 0.10
+- crowded_negative_rate: -0.05
+- log_review_count: -0.05
+
+Key engineered features:
+- Aspect sentiment: noise_sentiment, cleanliness_sentiment, staff_sentiment, location_sentiment, value_sentiment
+- Quiet/crowded: quiet_net, crowded_negative_rate
+- Popularity: log_review_count = log1p(dataset_total_reviews)
+- Geography: distance_from_center_km, distance_percentile_within_city, distance_sweet_spot, centrality_score
+- Outputs: quiet_match_score, calm_quality_score, crowd_match_score, distance_match_score, final_score, city_final_percentile
+
+Personalization parameters:
+- prefer_quiet: Boolean
+- quiet_weight: slider; report scenario used 0.30
+- avoid_crowds: Boolean
+- crowd_weight: slider; report scenario used 0.30
+- distance_mode: central, balanced, outer
+- distance_weight: slider; report scenario used 0.10
+- top_k: report scenario used 10
+
+Validation notes:
+- Preference sensitivity: 7 of top 10 Paris recommendations changed between quiet and lively traveler scenarios.
+- Popularity separation: normalized review volume does not fully determine hidden-gem score.
+- Deployment validation: Streamlit app runs with city selection, preference controls, rankings, map, and explainability metrics.
